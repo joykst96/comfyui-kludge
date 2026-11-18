@@ -3,6 +3,7 @@
 Known risks and what to check after updating ComfyUI, comfy-kitchen or torch.
 
 Tested with ComfyUI 0.43.0, comfy-kitchen 0.2.40, torch 2.14.1+cu130 (2026-10-29; Spectrum and SPEED 2026-11-01).
+Spectrum on MOSS-Image: ComfyUI 0.45.0, comfy-kitchen 0.2.41 (2026-11-18).
 Recheck after updating any of these. The quickest check for each node is listed with it.
 
 ## Block Compile — the stopgap one, steps off ComfyUI's direction
@@ -54,7 +55,7 @@ Recheck after updating any of these. The quickest check for each node is listed 
 - Check: node output must be bit-identical to a file made by comfy-model-tools
   (`quant_int8_convrot.py`, default options) for the same model.
 
-## Spectrum — re-implements the end of the Anima forward
+## Spectrum — re-implements the end of the Anima (and MOSS-Image) forward
 
 Tested 2026-11-01 against ComfyUI-Spectrum-KSampler 2.13.0.
 
@@ -87,6 +88,44 @@ Tested 2026-11-01 against ComfyUI-Spectrum-KSampler 2.13.0.
   to the original DiT Spectrum Patch (same settings, er_sde) the images look the same and both sit
   in the same PSNR range against no Spectrum (19-26 dB, 3 prompts x 2 seeds); kludge vs original is
   25-33 dB. Not bit-identical: the original rounds the forecast to bf16.
+
+### Spectrum on MOSS-Image
+
+The node picks the architecture from the model's attributes (`ARCHS` in `spectrum.py`); forecaster,
+window rule and sampler wrapper are shared with Anima.
+
+- On predicted steps it runs its own copy of the tail of `MOSSImage._forward`
+  (`comfy/ldm/moss_image/model.py`): `timestep_embedding(t, 256)` → cast → `time_embedding` →
+  `video_head_modulation` split into (shift, scale) → `modulated_rms_norm(x, final_norm_video,
+  scale, shift)` → `final_linear_video` → transpose/reshape to `latent_channels`. If ComfyUI changes
+  that tail, predicted steps go wrong silently. `modulated_rms_norm` and `timestep_embedding` are
+  imported from ComfyUI inside the head, so the pack still loads on a ComfyUI without MOSS-Image.
+- There is no module call between the blocks and the head, so the feature is copied from the output
+  of the last block (`layers[-1]` forward hook), image tokens only (`x[:, :H*W]`; text and reference
+  tokens follow). Relies on the image tokens coming first in the sequence and on the blocks returning
+  the sequence. When the reference keys are not precomputed, `preprocess_refs` runs the blocks first;
+  the last capture is the main pass.
+- `MOSSImage.forward` hands `transformer_options` to the wrappers positionally (Anima: keyword). If
+  that changes the node finds no state and every call runs the full model (log: 0 predicted).
+- Forecasters are per cond, like Anima. MOSS-Image runs cond and uncond as separate calls (different
+  text lengths), so the log counts calls, not steps: `25 steps, 30 full model calls, 20 predicted`.
+  A cond that changes mid-run starts a new forecaster and costs a few full calls: SLG ending at 50%
+  gives `33 full, 17 predicted`, the depth control ending at 60% `36 full, 14 predicted`.
+- Text: at defaults one small text block came out garbled on 1 of 5 seeds of the layout template
+  (with and without SLG; t2i posters, Base + SLG, edit and depth control were clean). The block is
+  still forming during steps 6-10; `warmup_steps` 10 kept it intact (`flex_window` 0 and
+  `tail_actual_steps` 6 did not).
+- Measured (SFT int8, 1024², CK, no patch → Spectrum defaults): t2i 25 steps er_sde 10.40 → 6.5 s,
+  Base + SLG 10.5 → 7.2 s, layout + SLG 11.4 → 7.8 s (8.9 s with `warmup_steps` 10), edit LoRA
+  30 steps euler 16.1 → 9.7 s, depth control LoRA 10.4 → 7.7 s. Extra VRAM not measured; one
+  feature is about 25 MB at 1024² (4096 tokens × 3072, bf16), 30 of them at defaults.
+- Check: SFT t2i, 25 steps, er_sde, defaults → log `25 steps, 30 full model calls, 20 predicted`,
+  and the image keeps the composition and text of the unpatched run (20-25 dB, 4 prompts x 2 seeds).
+  Anima output must not change when this part is edited (bit-identical before/after).
+- SPEED and Block Compile are not for MOSS-Image. SPEED runs but garbles text at the default
+  handoff (18 of 25 steps at low resolution with the shift 5 schedule), and the settings that keep
+  text are only 9-12% faster. Per-block compile gained 2% (the blocks are already fused
+  comfy-kitchen kernels) and needs a comfy-kitchen patch to trace.
 
 ## SPEED — swaps the sampler function for one call
 

@@ -1,6 +1,7 @@
 # comfyui-anima-kludge
 
 Makeshift helper nodes for Anima (2B / 2.9B). Category `anima/kludge`.
+Anima Spectrum also works on MOSS-Image; the other nodes are Anima only.
 
 ```
 Load Diffusion Model → Anima INT8 Quantize → LoRA loader(s) → Anima 2.9B LoRA Remap
@@ -27,6 +28,9 @@ Use er_sde, euler, euler_ancestral, dpmpp_2m, uni_pc or heun; it switches itself
 dpmpp_2m/3m SDE samplers, which get color blotches with Spectrum. Keeps the full-call features in
 VRAM: about +0.5 GB at 1024² and +1.2 GB at 1536² (batch 1; `history_size` 8 halves it).
 Plain Spectrum only: the original's mod guidance, SEA scheduling and CFG corrections are not included.
+Also takes MOSS-Image models (SFT, Base, with the edit and control LoRAs): 25 steps run 15 full
+steps and 10 predicted, about 35% faster with the same composition and text. A small text block can
+still break on some seeds; `warmup_steps` 10 fixed the case found (about 22% faster instead).
 
 **Anima SPEED** (`KludgeAnimaSPEED`) — SPD multi-resolution sampling: the early steps run on a
 half-size latent, which is then spectrally expanded to full size at sigma 0.7. Unlike the original
@@ -34,7 +38,7 @@ SPEED sampler (Euler only) it wraps whichever sampler the KSampler uses. Changes
 content tags hold, pose and camera tags (lying, from above, drawing bow) can get lost. With
 Anima Spectrum on the same model it is the full SPEED; it pays off at large sizes (1536²), at 1024²
 Spectrum alone is faster. Only acts on full-denoise sampling: a hires pass or img2img on the same
-model runs normally.
+model runs normally. Anima only: on MOSS-Image it runs but garbles rendered text.
 
 **Anima Block Compile** (`KludgeAnimaBlockCompile`) — `torch.compile` per transformer block, also
 with Comfy Kitchen attention (`--use-ck-attention`). Turns off dynamic VRAM for the model and uses a

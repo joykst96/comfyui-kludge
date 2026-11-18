@@ -1,4 +1,4 @@
-"""Spectrum feature forecasting for the Anima DiT as a MODEL patch.
+"""Spectrum feature forecasting for the Anima DiT (and MOSS-Image) as a MODEL patch.
 
 Spectrum (Han et al., CVPR 2026, arXiv:2603.01623): the feature entering final_layer changes smoothly
 with the step, so on most steps all transformer blocks are skipped and that feature is predicted from
@@ -8,6 +8,9 @@ and unpatchify run on a predicted step.
 Schedule rule, forecaster math and defaults follow ComfyUI-Spectrum-KSampler by sorryhyun, MIT License
 (LICENSE-spectrum-ksampler). Different here: the step count and step index come from the sampler's own
 sigmas (no steps input), and every sampler call gets fresh forecasters (hires pass, SPEED stages).
+
+MOSS-Image uses the same forecaster; only where the feature is caught (the image tokens leaving the last
+block) and the head that turns it into the output differ. See _Anima / _MossImage.
 """
 
 import contextlib
@@ -159,55 +162,113 @@ def _batch_key(transformer_options, x):
     return tuple(cond_or_uncond), tuple(map(str, uuids)), replaced, tuple(x.shape)
 
 
-def _head(dit, feat, timesteps, x_shape):
-    """The part of MiniTrainDIT._forward after the blocks, fed with a predicted feature."""
-    if timesteps.ndim == 1:
-        timesteps = timesteps.unsqueeze(1)
-    t_emb, adaln_lora = dit.t_embedder[1](dit.t_embedder[0](timesteps).to(feat.dtype))
-    t_emb = dit.t_embedding_norm(t_emb)
-    out = dit.unpatchify(dit.final_layer(feat, t_emb, adaln_lora_B_T_3D=adaln_lora))
-    return out[:, :, :x_shape[-3], :x_shape[-2], :x_shape[-1]]
+def _copy(t):
+    # the copy must not come from the memory compiler's pool
+    with pause_malloc_graph():
+        return t.detach().clone()
 
 
-def _diffusion_model_wrapper(executor, x, timesteps, context, *args, **kwargs):
-    transformer_options = kwargs.get("transformer_options", {})
-    state = transformer_options.get(STATE_KEY)
-    if state is None or transformer_options.get(LOWRES_KEY) or kwargs.get("control") is not None:
-        return executor(x, timesteps, context, *args, **kwargs)
-    run = state.run_for(transformer_options.get("sample_sigmas"))
-    sigmas = transformer_options.get("sigmas")
-    step = run.step_of(sigmas.flatten()[0].item()) if run is not None and sigmas is not None else None
-    if step is None:
-        return executor(x, timesteps, context, *args, **kwargs)
+class _Anima:
+    """MiniTrainDIT (comfy/ldm/cosmos/predict2.py): the feature is the input of final_layer."""
+    name = "Anima"
+    needs = ("final_layer", "t_embedder", "t_embedding_norm", "unpatchify")
 
-    dit = executor.class_obj
-    key = _batch_key(transformer_options, x)
-    run.begin_step(step, key)
-    forecaster = run.forecasters.get(key)
-    if run.mode == "cached" and forecaster is not None and forecaster.ready():
-        run.forecast += 1
-        return _head(dit, forecaster.predict(step), timesteps, x.shape)
+    @staticmethod
+    def transformer_options(args, kwargs):
+        return kwargs.get("transformer_options", {})
 
-    captured = []
+    @staticmethod
+    def hook(dit, x, captured):
+        return dit.final_layer.register_forward_pre_hook(lambda module, inputs: captured.append(_copy(inputs[0])))
 
-    def capture(module, inputs):
-        # the copy must not come from the memory compiler's pool
-        with pause_malloc_graph():
-            captured.append(inputs[0].detach().clone())
+    @staticmethod
+    def feature(captured):
+        return captured[0] if len(captured) == 1 else None
 
-    handle = dit.final_layer.register_forward_pre_hook(capture)
-    try:
-        out = executor(x, timesteps, context, *args, **kwargs)
-    finally:
-        handle.remove()
-    run.actual += 1
-    if len(captured) == 1:
-        f = run.forecaster(key, captured[0])
-        if f.t and f.t[-1] == step:  # re-evaluation at the same sigma (Heun etc.): keep the latest
-            f.h[-1] = captured[0]
-        else:
-            f.update(step, captured[0])
-    return out
+    @staticmethod
+    def head(dit, feat, timesteps, x_shape):
+        """The part of MiniTrainDIT._forward after the blocks, fed with a predicted feature."""
+        if timesteps.ndim == 1:
+            timesteps = timesteps.unsqueeze(1)
+        t_emb, adaln_lora = dit.t_embedder[1](dit.t_embedder[0](timesteps).to(feat.dtype))
+        t_emb = dit.t_embedding_norm(t_emb)
+        out = dit.unpatchify(dit.final_layer(feat, t_emb, adaln_lora_B_T_3D=adaln_lora))
+        return out[:, :, :x_shape[-3], :x_shape[-2], :x_shape[-1]]
+
+
+class _MossImage:
+    """MOSSImage (comfy/ldm/moss_image/model.py): one sequence of image, text and reference tokens. The
+    feature is the image tokens leaving the last block; there is no module call between the blocks and
+    the head to hook, so the last block's output is copied instead."""
+    name = "MOSS-Image"
+    needs = ("layers", "time_embedding", "video_head_modulation", "final_norm_video", "final_linear_video")
+
+    @staticmethod
+    def transformer_options(args, kwargs):
+        # MOSSImage.forward hands transformer_options to the wrappers positionally
+        return args[0] if args and isinstance(args[0], dict) else kwargs.get("transformer_options", {})
+
+    @staticmethod
+    def hook(dit, x, captured):
+        image_tokens = x.shape[-2] * x.shape[-1]
+        return dit.layers[-1].register_forward_hook(
+            lambda module, inputs, output: captured.append(_copy(output[:, :image_tokens])))
+
+    @staticmethod
+    def feature(captured):
+        # preprocess_refs runs the blocks too when the reference keys are not precomputed; the main pass is last
+        return captured[-1] if captured else None
+
+    @staticmethod
+    def head(dit, feat, timesteps, x_shape):
+        """The part of MOSSImage._forward after the blocks, fed with a predicted feature."""
+        from comfy.ldm.flux.layers import timestep_embedding
+        from comfy.ldm.moss_image.model import modulated_rms_norm
+        vec = dit.time_embedding(timestep_embedding(timesteps, 256).to(feat.dtype))
+        head_shift, head_scale = dit.video_head_modulation(vec).unflatten(-1, (2, -1)).unsqueeze(2).unbind(1)
+        out = dit.final_linear_video(modulated_rms_norm(feat, dit.final_norm_video, head_scale, head_shift))
+        return out.transpose(1, 2).reshape(x_shape[0], dit.latent_channels, x_shape[-2], x_shape[-1])
+
+
+ARCHS = (_Anima, _MossImage)
+
+
+def _diffusion_model_wrapper(arch):
+    def wrapper(executor, x, timesteps, context, *args, **kwargs):
+        transformer_options = arch.transformer_options(args, kwargs)
+        state = transformer_options.get(STATE_KEY)
+        if state is None or transformer_options.get(LOWRES_KEY) or kwargs.get("control") is not None:
+            return executor(x, timesteps, context, *args, **kwargs)
+        run = state.run_for(transformer_options.get("sample_sigmas"))
+        sigmas = transformer_options.get("sigmas")
+        step = run.step_of(sigmas.flatten()[0].item()) if run is not None and sigmas is not None else None
+        if step is None:
+            return executor(x, timesteps, context, *args, **kwargs)
+
+        dit = executor.class_obj
+        key = _batch_key(transformer_options, x)
+        run.begin_step(step, key)
+        forecaster = run.forecasters.get(key)
+        if run.mode == "cached" and forecaster is not None and forecaster.ready():
+            run.forecast += 1
+            return arch.head(dit, forecaster.predict(step), timesteps, x.shape)
+
+        captured = []
+        handle = arch.hook(dit, x, captured)
+        try:
+            out = executor(x, timesteps, context, *args, **kwargs)
+        finally:
+            handle.remove()
+        run.actual += 1
+        feat = arch.feature(captured)
+        if feat is not None:
+            f = run.forecaster(key, feat)
+            if f.t and f.t[-1] == step:  # re-evaluation at the same sigma (Heun etc.): keep the latest
+                f.h[-1] = feat
+            else:
+                f.update(step, feat)
+        return out
+    return wrapper
 
 
 def _sampler_sample_wrapper(cfg):
@@ -254,17 +315,18 @@ class KludgeAnimaSpectrum:
     FUNCTION = "patch"
     CATEGORY = "anima/kludge"
     DESCRIPTION = ("Spectrum: skip the transformer blocks on most steps and predict their output. "
-                   "Step count comes from the sampler, so it works with any sampler, scheduler and denoise.")
+                   "Step count comes from the sampler, so it works with any sampler, scheduler and denoise. "
+                   "For Anima and MOSS-Image models.")
     EXPERIMENTAL = True
 
     def patch(self, model, **cfg):
         if cfg["history_size"] < cfg["cheby_degree"] + 2:
             raise ValueError("history_size must be at least cheby_degree + 2")
         dit = model.get_model_object("diffusion_model")
-        for name in ("final_layer", "t_embedder", "t_embedding_norm", "unpatchify"):
-            if not hasattr(dit, name):
-                raise ValueError(f"KludgeAnimaSpectrum needs an Anima / Cosmos DiT model (no {name})")
+        arch = next((a for a in ARCHS if all(hasattr(dit, name) for name in a.needs)), None)
+        if arch is None:
+            raise ValueError(f"KludgeAnimaSpectrum needs an Anima / Cosmos DiT or MOSS-Image model, got {type(dit).__name__}")
         m = model.clone()
-        m.add_wrapper_with_key(WrappersMP.DIFFUSION_MODEL, STATE_KEY, _diffusion_model_wrapper)
+        m.add_wrapper_with_key(WrappersMP.DIFFUSION_MODEL, STATE_KEY, _diffusion_model_wrapper(arch))
         m.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, STATE_KEY, _sampler_sample_wrapper(cfg))
         return (m,)
