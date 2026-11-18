@@ -1,4 +1,4 @@
-"""Spectrum feature forecasting for the Anima DiT (and MOSS-Image) as a MODEL patch.
+"""Spectrum feature forecasting for the Anima DiT (and MOSS-Image, MiniMax H3) as a MODEL patch.
 
 Spectrum (Han et al., CVPR 2026, arXiv:2603.01623): the feature entering final_layer changes smoothly
 with the step, so on most steps all transformer blocks are skipped and that feature is predicted from
@@ -9,8 +9,8 @@ Schedule rule, forecaster math and defaults follow ComfyUI-Spectrum-KSampler by 
 (LICENSE-spectrum-ksampler). Different here: the step count and step index come from the sampler's own
 sigmas (no steps input), and every sampler call gets fresh forecasters (hires pass, SPEED stages).
 
-MOSS-Image uses the same forecaster; only where the feature is caught (the image tokens leaving the last
-block) and the head that turns it into the output differ. See _Anima / _MossImage.
+MOSS-Image and MiniMax H3 use the same forecaster; only where the feature is caught and how a predicted
+step turns it into the output differ. See _Anima / _MossImage / _H3.
 """
 
 import contextlib
@@ -159,7 +159,8 @@ def _batch_key(transformer_options, x):
     uuids = transformer_options.get("uuids") or ()
     cond_or_uncond = transformer_options.get("cond_or_uncond") or ()
     replaced = tuple(sorted(map(str, transformer_options.get("patches_replace", {}).get("dit", {}))))
-    return tuple(cond_or_uncond), tuple(map(str, uuids)), replaced, tuple(x.shape)
+    shape = tuple(tuple(t.shape) for t in x) if isinstance(x, (list, tuple)) else tuple(x.shape)  # H3: [video, audio]
+    return tuple(cond_or_uncond), tuple(map(str, uuids)), replaced, shape
 
 
 def _copy(t):
@@ -195,6 +196,10 @@ class _Anima:
         out = dit.unpatchify(dit.final_layer(feat, t_emb, adaln_lora_B_T_3D=adaln_lora))
         return out[:, :, :x_shape[-3], :x_shape[-2], :x_shape[-1]]
 
+    @classmethod
+    def predicted(cls, dit, feat, x, timesteps, call):
+        return cls.head(dit, feat, timesteps, x.shape)
+
 
 class _MossImage:
     """MOSSImage (comfy/ldm/moss_image/model.py): one sequence of image, text and reference tokens. The
@@ -229,8 +234,50 @@ class _MossImage:
         out = dit.final_linear_video(modulated_rms_norm(feat, dit.final_norm_video, head_scale, head_shift))
         return out.transpose(1, 2).reshape(x_shape[0], dit.latent_channels, x_shape[-2], x_shape[-1])
 
+    @classmethod
+    def predicted(cls, dit, feat, x, timesteps, call):
+        return cls.head(dit, feat, timesteps, x.shape)
 
-ARCHS = (_Anima, _MossImage)
+
+class _H3:
+    """MiniMaxH3Model / MiniMaxH3ImageModel (comfy/ldm/minimax/model.py): one packed sequence
+    [text | references | audio | video], x is [video, audio]. The feature is the target rows (audio and
+    video, the last segments) of the sequence entering final_layer. A predicted step runs the model's own
+    forward with _run_blocks swapped for a function that drops the forecast into those rows, so the embed,
+    the timestep table and the output heads stay ComfyUI's code instead of a copy here."""
+    name = "MiniMax H3"
+    needs = ("blocks", "final_layer", "token_refiner", "video_patch_proj", "_run_blocks")
+
+    @staticmethod
+    def transformer_options(args, kwargs):
+        # forward hands transformer_options to the wrappers positionally
+        return args[0] if args and isinstance(args[0], dict) else kwargs.get("transformer_options", {})
+
+    @staticmethod
+    def hook(dit, x, captured):
+        def pre_hook(module, inputs):
+            h, video_seg, audio_seg = inputs[0], inputs[2], inputs[3]  # final_layer(x, t_emb, video_seg, audio_seg, ...)
+            start = video_seg[0] if audio_seg is None else min(video_seg[0], audio_seg[0])
+            captured.append(_copy(h[start:]))
+        return dit.final_layer.register_forward_pre_hook(pre_hook)
+
+    @staticmethod
+    def feature(captured):
+        return captured[-1] if captured else None
+
+    @staticmethod
+    def predicted(dit, feat, x, timesteps, call):
+        def run_blocks(h, t_emb, mod_segments, layout, transformer_options):
+            h[h.shape[0] - feat.shape[0]:] = feat
+            return h
+        dit._run_blocks = run_blocks  # instance attribute shadows the method for this call only
+        try:
+            return call()
+        finally:
+            del dit._run_blocks
+
+
+ARCHS = (_Anima, _MossImage, _H3)
 
 
 def _diffusion_model_wrapper(arch):
@@ -251,7 +298,9 @@ def _diffusion_model_wrapper(arch):
         forecaster = run.forecasters.get(key)
         if run.mode == "cached" and forecaster is not None and forecaster.ready():
             run.forecast += 1
-            return arch.head(dit, forecaster.predict(step), timesteps, x.shape)
+            with pause_malloc_graph():  # the forecast must not come from the memory compiler's pool
+                feat = forecaster.predict(step)
+            return arch.predicted(dit, feat, x, timesteps, lambda: executor(x, timesteps, context, *args, **kwargs))
 
         captured = []
         handle = arch.hook(dit, x, captured)
@@ -316,7 +365,7 @@ class KludgeAnimaSpectrum:
     CATEGORY = "anima/kludge"
     DESCRIPTION = ("Spectrum: skip the transformer blocks on most steps and predict their output. "
                    "Step count comes from the sampler, so it works with any sampler, scheduler and denoise. "
-                   "For Anima and MOSS-Image models.")
+                   "For Anima, MOSS-Image and MiniMax H3 models.")
     EXPERIMENTAL = True
 
     def patch(self, model, **cfg):
@@ -325,7 +374,7 @@ class KludgeAnimaSpectrum:
         dit = model.get_model_object("diffusion_model")
         arch = next((a for a in ARCHS if all(hasattr(dit, name) for name in a.needs)), None)
         if arch is None:
-            raise ValueError(f"KludgeAnimaSpectrum needs an Anima / Cosmos DiT or MOSS-Image model, got {type(dit).__name__}")
+            raise ValueError(f"KludgeAnimaSpectrum needs an Anima / Cosmos DiT, MOSS-Image or MiniMax H3 model, got {type(dit).__name__}")
         m = model.clone()
         m.add_wrapper_with_key(WrappersMP.DIFFUSION_MODEL, STATE_KEY, _diffusion_model_wrapper(arch))
         m.add_wrapper_with_key(WrappersMP.SAMPLER_SAMPLE, STATE_KEY, _sampler_sample_wrapper(cfg))

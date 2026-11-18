@@ -1,7 +1,7 @@
 # comfyui-anima-kludge
 
 Makeshift helper nodes for Anima (2B / 2.9B). Category `anima/kludge`.
-Anima Spectrum also works on MOSS-Image; the other nodes are Anima only.
+Anima Spectrum also works on MOSS-Image and MiniMax H3; the other nodes are Anima only.
 
 ```
 Load Diffusion Model → Anima INT8 Quantize → LoRA loader(s) → Anima 2.9B LoRA Remap
@@ -31,6 +31,10 @@ Plain Spectrum only: the original's mod guidance, SEA scheduling and CFG correct
 Also takes MOSS-Image models (SFT, Base, with the edit and control LoRAs): 25 steps run 15 full
 steps and 10 predicted, about 35% faster with the same composition and text. A small text block can
 still break on some seeds; `warmup_steps` 10 fixed the case found (about 22% faster instead).
+Also takes MiniMax H3 video+audio models (tested on text-to-video): the template's 20 steps run 14
+full steps and 6 predicted, about 30% faster with the same video and nearly the same audio. The
+features are large there (about +1 GB for 2 s and +2.2 GB for 5 s at 864x480), so lower
+`history_size` for big or long videos. Few-step turbo models gain nothing (no step is predicted).
 
 **Anima SPEED** (`KludgeAnimaSPEED`) — SPD multi-resolution sampling: the early steps run on a
 half-size latent, which is then spectrally expanded to full size at sigma 0.7. Unlike the original
@@ -38,7 +42,8 @@ SPEED sampler (Euler only) it wraps whichever sampler the KSampler uses. Changes
 content tags hold, pose and camera tags (lying, from above, drawing bow) can get lost. With
 Anima Spectrum on the same model it is the full SPEED; it pays off at large sizes (1536²), at 1024²
 Spectrum alone is faster. Only acts on full-denoise sampling: a hires pass or img2img on the same
-model runs normally. Anima only: on MOSS-Image it runs but garbles rendered text.
+model runs normally. Anima only: on MOSS-Image it runs but garbles rendered text, and it does not
+handle MiniMax H3's packed video+audio latent.
 
 **Anima Block Compile** (`KludgeAnimaBlockCompile`) — `torch.compile` per transformer block, also
 with Comfy Kitchen attention (`--use-ck-attention`). Turns off dynamic VRAM for the model and uses a

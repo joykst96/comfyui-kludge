@@ -3,7 +3,7 @@
 Known risks and what to check after updating ComfyUI, comfy-kitchen or torch.
 
 Tested with ComfyUI 0.43.0, comfy-kitchen 0.2.40, torch 2.14.1+cu130 (2026-10-29; Spectrum and SPEED 2026-11-01).
-Spectrum on MOSS-Image: ComfyUI 0.45.0, comfy-kitchen 0.2.41 (2026-11-18).
+Spectrum on MOSS-Image and on MiniMax H3: ComfyUI 0.45.0, comfy-kitchen 0.2.41 (2026-11-18).
 Recheck after updating any of these. The quickest check for each node is listed with it.
 
 ## Block Compile — the stopgap one, steps off ComfyUI's direction
@@ -55,7 +55,7 @@ Recheck after updating any of these. The quickest check for each node is listed 
 - Check: node output must be bit-identical to a file made by comfy-model-tools
   (`quant_int8_convrot.py`, default options) for the same model.
 
-## Spectrum — re-implements the end of the Anima (and MOSS-Image) forward
+## Spectrum — re-implements the end of the Anima (and MOSS-Image) forward; swaps `_run_blocks` on MiniMax H3
 
 Tested 2026-11-01 against ComfyUI-Spectrum-KSampler 2.13.0.
 
@@ -126,6 +126,43 @@ window rule and sampler wrapper are shared with Anima.
   handoff (18 of 25 steps at low resolution with the shift 5 schedule), and the settings that keep
   text are only 9-12% faster. Per-block compile gained 2% (the blocks are already fused
   comfy-kitchen kernels) and needs a comfy-kitchen patch to trace.
+
+### Spectrum on MiniMax H3
+
+Same forecaster, window rule and sampler wrapper; `_H3` in `spectrum.py` is the adapter.
+
+- No copy of the model tail here. On a predicted step the node sets an instance attribute
+  `dit._run_blocks` (shadowing the method) to a function that writes the forecast into the last rows
+  of the packed sequence and returns it, calls the model's own `_forward`, and deletes the attribute
+  again. Embed, timestep table, `final_layer` (PDD heads included) and unpatchify stay ComfyUI's
+  code. Relies on `MiniMaxH3Model._forward` calling `self._run_blocks(h, t_emb, mod_segments, layout,
+  transformer_options)` and using its return value as the input of `final_layer`. If the blocks loop
+  is inlined or renamed, the attribute is never called: every step then runs the full model while
+  the log still counts predicted steps, and the time does not drop.
+- The feature is caught with a pre-hook on `final_layer(x, t_emb, video_seg, audio_seg, ...)`:
+  rows from the start of the first target segment to the end. Relies on the target streams being the
+  last segments of the pack ([text | references | audio | video]) and on those argument positions.
+  `final_layer` only reads the target rows, so the other rows of the returned sequence don't matter.
+- `x` is a list `[video, audio]` and `transformer_options` comes positionally (like MOSS-Image).
+- One model call per step (BasicGuider, no CFG): `20 steps, 14 full model calls, 6 predicted`.
+  Turbo models at 8 steps or fewer predict nothing (`warmup_steps` 6 + `tail_actual_steps` 3).
+- Feature size is rows x 5376 in bf16: 76 MB for 864x480 2 s, about 165 MB for 5 s, about 400 MB for
+  1344x768 5 s; up to 14 are kept at 20 steps. Measured peak: +1.0 GB (2 s), +2.2 GB (5 s).
+  The model is larger than a 16 GB card and streamed by dynamic VRAM, so that memory is taken from
+  the weights; lower `history_size` if steps slow down.
+- Measured (fl2va int8, t2v, 864x480, res_multistep, simple, 20 steps): 2 s 28.7 → 18.9 s, 5 s
+  69.5 → 50.1 s. Video keeps composition and motion (23-27 dB), audio waveform correlation with the
+  unpatched run 0.98.
+- Not run: reference (ref2va) and keyframe (i2v / first-last frame) conditioning, AddGuide, the Fun
+  ControlNet patch (its block hooks are skipped on predicted steps), masks, the H3 image model,
+  samplers other than res_multistep.
+- Check: t2v template settings with defaults → log `20 steps, 14 full model calls, 6 predicted`,
+  the sampling time drops by about a third, and the video keeps the composition of the unpatched
+  run. Anima and MOSS-Image output must not change when this part is edited.
+- Block Compile and SPEED are not for H3. Per-block compile runs but is 35% slower (8 GB of the
+  20 GB model is offloaded and the compiled blocks wait on the transfers; the blocks are fused
+  comfy-kitchen kernels already). SPEED needs a version that shrinks only the video stream of the
+  packed latent; a rehearsal worked but changes composition and makes the audio louder.
 
 ## SPEED — swaps the sampler function for one call
 
