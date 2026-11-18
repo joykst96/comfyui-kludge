@@ -147,9 +147,9 @@ class KludgeAnimaSPEED:
 
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
-    CATEGORY = "anima/kludge"
+    CATEGORY = "kludge"
     DESCRIPTION = ("SPEED (SPD): run the early steps on a low-resolution latent, then expand it to full size. "
-                   "Works with any sampler. Add Anima Spectrum to forecast the full-resolution steps too.")
+                   "Works with any sampler. Add Spectrum to forecast the full-resolution steps too.")
     EXPERIMENTAL = True
 
     def patch(self, model, scale, handoff_sigma):

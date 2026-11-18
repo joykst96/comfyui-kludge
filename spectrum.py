@@ -362,7 +362,7 @@ class KludgeAnimaSpectrum:
 
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
-    CATEGORY = "anima/kludge"
+    CATEGORY = "kludge"
     DESCRIPTION = ("Spectrum: skip the transformer blocks on most steps and predict their output. "
                    "Step count comes from the sampler, so it works with any sampler, scheduler and denoise. "
                    "For Anima, MOSS-Image and MiniMax H3 models.")

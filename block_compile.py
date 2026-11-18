@@ -30,7 +30,7 @@ class KludgeAnimaBlockCompile:
 
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
-    CATEGORY = "anima/kludge"
+    CATEGORY = "kludge"
     DESCRIPTION = ("torch.compile (inductor) the Anima DiT one transformer block at a time. "
                    "Works with Comfy Kitchen attention. Turns off dynamic VRAM for this model.")
     EXPERIMENTAL = True

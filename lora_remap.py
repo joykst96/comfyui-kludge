@@ -38,7 +38,7 @@ class KludgeAnima29BLoraRemap:
 
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "remap"
-    CATEGORY = "anima/kludge"
+    CATEGORY = "kludge"
     DESCRIPTION = ("Moves patches of 2B (28-block) Anima LoRAs onto the matching blocks of an Anima 2.9B model. "
                    "Place after the LoRA loaders. LoRAs already made for 2.9B are left as they are.")
 

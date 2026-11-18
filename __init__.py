@@ -16,7 +16,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "KludgeAnimaInt8Quantize": "Anima INT8 Quantize (kludge)",
     "KludgeAnima29BLoraRemap": "Anima 2.9B LoRA Remap (kludge)",
-    "KludgeAnimaSpectrum": "Anima Spectrum (kludge)",
+    "KludgeAnimaSpectrum": "Spectrum (kludge)",
     "KludgeAnimaSPEED": "Anima SPEED (kludge)",
     "KludgeAnimaBlockCompile": "Anima Block Compile (kludge)",
     "KludgeGuiderTrackModel": "Guider Track Model (kludge)",

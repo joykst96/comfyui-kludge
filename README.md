@@ -1,12 +1,14 @@
-# comfyui-anima-kludge
+# comfyui-kludge
 
-Makeshift helper nodes for Anima (2B / 2.9B). Category `anima/kludge`.
-Anima Spectrum also works on MOSS-Image and MiniMax H3, and Guider Track Model works with any
-model; the other nodes are Anima only.
+Makeshift ComfyUI helper nodes, added as needs come up. Category `kludge`.
+Most are for Anima (2B / 2.9B): the nodes named Anima are Anima only. Spectrum also works on
+MOSS-Image and MiniMax H3, and Guider Track Model works with any model.
+
+This repository was named `comfyui-anima-kludge` before; node IDs are unchanged.
 
 ```
 Load Diffusion Model → Anima INT8 Quantize → LoRA loader(s) → Anima 2.9B LoRA Remap
-  → Anima SPEED → Anima Spectrum → Anima Block Compile → KSampler
+  → Anima SPEED → Spectrum → Anima Block Compile → KSampler
 ```
 
 Every node is optional; keep the order.
@@ -21,7 +23,7 @@ Same result as a pre-quantized `int8_tensorwise` file. Put it right after Load D
 moving their patches onto the 2.9B blocks they came from. Put it after the LoRA loaders (LoRA
 Manager, core LoRA loader, ...). LoRAs already made for 2.9B and 2B models are left alone.
 
-**Anima Spectrum** (`KludgeAnimaSpectrum`) — Spectrum feature forecasting: on most steps the
+**Spectrum** (`KludgeAnimaSpectrum`) — Spectrum feature forecasting: on most steps the
 transformer blocks are skipped and their output is predicted from earlier steps. A model patch, so the
 normal KSampler stays; the step count is read from the sampler, so there is no steps input to keep in
 sync. Defaults match ComfyUI-Spectrum-KSampler (30 steps: 17 full model calls, 13 predicted).
@@ -41,7 +43,7 @@ features are large there (about +1 GB for 2 s and +2.2 GB for 5 s at 864x480), s
 half-size latent, which is then spectrally expanded to full size at sigma 0.7. Unlike the original
 SPEED sampler (Euler only) it wraps whichever sampler the KSampler uses. Changes the composition:
 content tags hold, pose and camera tags (lying, from above, drawing bow) can get lost. With
-Anima Spectrum on the same model it is the full SPEED; it pays off at large sizes (1536²), at 1024²
+Spectrum on the same model it is the full SPEED; it pays off at large sizes (1536²), at 1024²
 Spectrum alone is faster. Only acts on full-denoise sampling: a hires pass or img2img on the same
 model runs normally. Anima only: on MOSS-Image it runs but garbles rendered text, and it does not
 handle MiniMax H3's packed video+audio latent.

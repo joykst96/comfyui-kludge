@@ -77,7 +77,7 @@ class KludgeAnimaInt8Quantize:
 
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "quantize"
-    CATEGORY = "anima/kludge"
+    CATEGORY = "kludge"
     DESCRIPTION = ("Quantizes an Anima model to int8 at load time, same result as a pre-quantized int8 file. "
                    "Put it right after Load Diffusion Model, before LoRA loaders. Nothing is written to disk.")
 

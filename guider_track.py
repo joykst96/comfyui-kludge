@@ -28,7 +28,7 @@ class KludgeGuiderTrackModel:
 
     RETURN_TYPES = ("GUIDER",)
     FUNCTION = "track"
-    CATEGORY = "anima/kludge"
+    CATEGORY = "kludge"
     DESCRIPTION = ("Keeps the guider's model marked as used by the current prompt when the workflow is re-run from "
                    "the cache (dynamic VRAM). Place between the guider node (BasicGuider, CFGGuider, ...) and "
                    "SamplerCustomAdvanced. Fixes sampling getting 2-3x slower from the second run on models larger "
