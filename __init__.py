@@ -1,4 +1,5 @@
 from .block_compile import KludgeAnimaBlockCompile
+from .guider_track import KludgeGuiderTrackModel
 from .int8_quantize import KludgeAnimaInt8Quantize
 from .lora_remap import KludgeAnima29BLoraRemap
 from .spectrum import KludgeAnimaSpectrum
@@ -10,6 +11,7 @@ NODE_CLASS_MAPPINGS = {
     "KludgeAnimaSpectrum": KludgeAnimaSpectrum,
     "KludgeAnimaSPEED": KludgeAnimaSPEED,
     "KludgeAnimaBlockCompile": KludgeAnimaBlockCompile,
+    "KludgeGuiderTrackModel": KludgeGuiderTrackModel,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "KludgeAnimaInt8Quantize": "Anima INT8 Quantize (kludge)",
@@ -17,4 +19,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "KludgeAnimaSpectrum": "Anima Spectrum (kludge)",
     "KludgeAnimaSPEED": "Anima SPEED (kludge)",
     "KludgeAnimaBlockCompile": "Anima Block Compile (kludge)",
+    "KludgeGuiderTrackModel": "Guider Track Model (kludge)",
 }

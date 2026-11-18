@@ -4,6 +4,7 @@ Known risks and what to check after updating ComfyUI, comfy-kitchen or torch.
 
 Tested with ComfyUI 0.43.0, comfy-kitchen 0.2.40, torch 2.14.1+cu130 (2026-10-29; Spectrum and SPEED 2026-11-01).
 Spectrum on MOSS-Image and on MiniMax H3: ComfyUI 0.45.0, comfy-kitchen 0.2.41 (2026-11-18).
+Guider Track Model: ComfyUI 0.45.0, comfy-aimdo 0.6.0 (2026-11-18).
 Recheck after updating any of these. The quickest check for each node is listed with it.
 
 ## Block Compile — the stopgap one, steps off ComfyUI's direction
@@ -194,3 +195,28 @@ Same forecaster, window rule and sampler wrapper; `_H3` in `spectrum.py` is the 
   SPEED)` with `adaptive_smc_alpha` 0 (33-35 dB, 3 prompts x 2 seeds; same composition), and the log
   shows `64x64 for 17 steps, then 128x128 from sigma 0.6970 (aligned 0.8215)` at 1024², 30 steps,
   simple scheduler.
+
+## Guider Track Model — works around a gap in ComfyUI's prompt model tracking
+
+- What it fixes (ComfyUI 0.45.0, dynamic VRAM): `PromptModelTracker.add` (`comfy/model_patcher.py`)
+  marks the models of the running prompt from the values that flow into nodes about to execute. It
+  knows a `ModelPatcher`, an object with `.patcher` and an object with `get_models()`; a guider
+  (`comfy.samplers.CFGGuider`) has only `.model_patcher`. On a cached re-run (new seed, loader and
+  guider node cached) the sampled model is left unmarked, and `pin_eviction_tiers`
+  (`comfy/model_management.py`) frees the `weights` RAM pins of unmarked models first, even while
+  that model is sampling.
+- It only shows when three things meet: the model is larger than VRAM (part of it is streamed from
+  RAM pins every step), RAM is nearly full (an idle text encoder keeps its pins), and something asks
+  for new pins (a video VAE decode pushes model pages out of VRAM). Then the model's own pins are
+  dropped and re-read from the file each step.
+- The node sets `get_models` on the guider instance (the cached object itself, not a copy) and
+  returns it. Relies on internals: the tracker calling `get_models()` on link values, and
+  `ModelPatcher.model_patches_models()` / `get_nested_additional_models()`.
+- Retire when: `CFGGuider` gets its own `get_models()` or `.patcher`, or the tracker starts reading
+  `.model_patcher` (the node already skips guiders that have `get_models`), or the eviction tiers
+  stop freeing the pins of a model that is active.
+- Check (MiniMax H3 t2v 864x480, 56 frames, 20 steps, video + audio decode, seeds 1, 2, 3 on one
+  server): steps 3-20 must stay at the first run's time in runs 2 and 3 (1.30 s here; without the
+  node 2.9 and 3.7 s), and the latents must be bit-identical to the same workflow without the node.
+  Whether the model is marked can be read from
+  `model.model.dynamic_pins[model.load_device]["current_prompt"]` during sampling.

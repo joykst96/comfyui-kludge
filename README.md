@@ -1,7 +1,8 @@
 # comfyui-anima-kludge
 
 Makeshift helper nodes for Anima (2B / 2.9B). Category `anima/kludge`.
-Anima Spectrum also works on MOSS-Image and MiniMax H3; the other nodes are Anima only.
+Anima Spectrum also works on MOSS-Image and MiniMax H3, and Guider Track Model works with any
+model; the other nodes are Anima only.
 
 ```
 Load Diffusion Model → Anima INT8 Quantize → LoRA loader(s) → Anima 2.9B LoRA Remap
@@ -48,6 +49,16 @@ handle MiniMax H3's packed video+audio latent.
 **Anima Block Compile** (`KludgeAnimaBlockCompile`) — `torch.compile` per transformer block, also
 with Comfy Kitchen attention (`--use-ck-attention`). Turns off dynamic VRAM for the model and uses a
 little more attention memory. The first run after a server start or resolution change compiles.
+
+**Guider Track Model** (`KludgeGuiderTrackModel`) — for workflows that sample through a guider
+(`BasicGuider` or `CFGGuider` → `SamplerCustomAdvanced`) with a model larger than VRAM. Without it,
+re-running the workflow with a new seed can get 2-3x slower per step from the second run, typically
+after a video VAE decode: ComfyUI no longer counts the cached guider's model as part of the running
+prompt, drops its pinned RAM first, and re-reads the offloaded part of the model file every step.
+Put it between the guider node and SamplerCustomAdvanced's `guider` input. Output is unchanged
+(bit-identical latents). Measured on MiniMax H3 (20 GB model, 16 GB VRAM, 40 GB RAM), three runs in
+a row with decode: 1.30 / 2.94 / 3.73 s per step without it, 1.30 / 1.30 / 1.30 with it. Not needed
+with KSampler, whose model input is tracked directly.
 
 Update risks and checks for each node: [MAINTENANCE.md](MAINTENANCE.md).
 
