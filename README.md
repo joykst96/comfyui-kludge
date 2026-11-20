@@ -8,7 +8,7 @@ This repository was named `comfyui-anima-kludge` before; node IDs are unchanged.
 
 ```
 Load Diffusion Model → Anima INT8 Quantize → LoRA loader(s) → Anima 2.9B LoRA Remap
-  → Anima SPEED → Spectrum → Anima Block Compile → KSampler
+  → Anima SPEED → Spectrum → Anima Block Compile → Anima SnapRef → KSampler
 ```
 
 Every node is optional; keep the order.
@@ -52,6 +52,22 @@ handle MiniMax H3's packed video+audio latent.
 with Comfy Kitchen attention (`--use-ck-attention`). Turns off dynamic VRAM for the model and uses a
 little more attention memory. The first run after a server start or resolution change compiles.
 
+**Anima SnapRef** (`KludgeAnimaSnapRef`) — character reference with
+[SnapRef](https://github.com/ArcAnima/SnapRef) weights: give it a picture of a character and write
+only the scene in the prompt. It computes what the SnapRef node computes, but patches the model in a
+way that keeps int8 models fast and works with Anima Block Compile. Measured on Anima 2B int8 convrot,
+1024², 30 steps, one reference: 7.0 s with Block Compile (6.2 s without a reference) and 8.0 s without
+compile (7.2–7.9 s); the SnapRef node takes 12.9–15.5 s there and fails with Block Compile. Put the
+weights (`snapref_v2a.safetensors`) in `models/loras`; the SnapRef node itself is not needed. Put this
+node after Anima Block Compile: in front of it, every change of the reference or its settings rebuilds
+and recompiles the model. `mode` cs takes character and art style from the picture, char the character
+only. `strength` below 0 or `fidelity` below 1 lets the prompt change the outfit; `image_2` / `image_3`
+add views of the same character (a full-body view fixes the lower body), with `weight_1..3` for how much
+each counts. Keeps the reference in VRAM until the model is unloaded: about 0.9 GB per 1 MP picture.
+Works on Anima 2.9B (blocks are mapped) and with other LoRAs, 2.9B LoRA Remap and Spectrum. Not
+included from the SnapRef node: `ref_guidance`, `use_batch` and the picture-picker node. The weights
+are a derivative of Anima (CircleStone non-commercial license) and are not part of this repository.
+
 **Guider Track Model** (`KludgeGuiderTrackModel`) — for workflows that sample through a guider
 (`BasicGuider` or `CFGGuider` → `SamplerCustomAdvanced`) with a model larger than VRAM. Without it,
 re-running the workflow with a new seed can get 2-3x slower per step from the second run, typically
@@ -67,11 +83,14 @@ Update risks and checks for each node: [MAINTENANCE.md](MAINTENANCE.md).
 ## License
 
 MIT, Copyright (c) 2026 joykst96 (see LICENSE). Code only; no model weights are included.
-Parts follow other MIT-licensed code, whose notices are kept:
+Parts follow other projects' code, whose licenses and notices are kept:
 
-- `block_compile.py`: AnimaBlockCompile from anima_lora by Seunghyun Ji (LICENSE-anima-lora).
-- `spectrum.py`, `speed.py`: ComfyUI-Spectrum-KSampler by sorryhyun (LICENSE-spectrum-ksampler);
+- `block_compile.py`: AnimaBlockCompile from anima_lora by Seunghyun Ji (MIT, LICENSE-anima-lora).
+- `spectrum.py`, `speed.py`: ComfyUI-Spectrum-KSampler by sorryhyun (MIT, LICENSE-spectrum-ksampler);
   the spectral expansion in `speed.py` follows anima_lora's `spd_core` (LICENSE-anima-lora).
+- `snapref.py`: the weight file loading, reference encoding and reference image handling follow the
+  ComfyUI node of SnapRef by ArcAnima (Apache License 2.0, LICENSE-snapref). The file's header lists
+  what was taken and what was changed.
 
 ## Thanks
 
@@ -84,6 +103,8 @@ These projects were referenced while making this pack. Thank you to their author
   Papers: Spectrum (Han et al., CVPR 2026, arXiv:2603.01623), SPD (Xiao et al., arXiv:2605.18736).
 - [anima_lora](https://github.com/sorryhyun/anima_lora) by Seunghyun Ji: the SPD spectral expansion
   (`networks/spd_core.py`) and the method notes behind Spectrum and SPEED on Anima.
+- [SnapRef](https://github.com/ArcAnima/SnapRef) by ArcAnima: the reference adapter, its weights and
+  the node that the SnapRef node here follows and was checked against, setting by setting.
 - [ComfyUI-EasyUseAnima](https://github.com/n0va39/ComfyUI-EasyUseAnima) by n0va39: its 2.9B LoRA
   support uses the same 2B → 2.9B block table, which helped confirm the mapping. Its AiO sampler
   showed how Spectrum and SPEED are used in practice.

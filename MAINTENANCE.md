@@ -5,6 +5,7 @@ Known risks and what to check after updating ComfyUI, comfy-kitchen or torch.
 Tested with ComfyUI 0.43.0, comfy-kitchen 0.2.40, torch 2.14.1+cu130 (2026-10-29; Spectrum and SPEED 2026-11-01).
 Spectrum on MOSS-Image and on MiniMax H3: ComfyUI 0.45.0, comfy-kitchen 0.2.41 (2026-11-18).
 Guider Track Model: ComfyUI 0.45.0, comfy-aimdo 0.6.0 (2026-11-18).
+SnapRef: ComfyUI 0.45.0, comfy-kitchen 0.2.41, torch 2.14.1+cu130, SnapRef node 87bdacd, weights v2a (2026-11-20).
 Recheck after updating any of these. The quickest check for each node is listed with it.
 
 ## Block Compile — the stopgap one, steps off ComfyUI's direction
@@ -220,3 +221,67 @@ Same forecaster, window rule and sampler wrapper; `_H3` in `spectrum.py` is the 
   node 2.9 and 3.7 s), and the latents must be bit-identical to the same workflow without the node.
   Whether the model is marked can be read from
   `model.model.dynamic_pins[model.load_device]["current_prompt"]` during sampling.
+
+## SnapRef — class-level patch of the Anima self-attention; another project's weight format
+
+- What it is: a second runtime for SnapRef weights (`anima_ref_kv/1`). It must stay equivalent to the
+  SnapRef node (https://github.com/ArcAnima/SnapRef, `comfyui_nodes/snapref`), which is the reference
+  for every check below. Tested against node commit 87bdacd with `snapref_v2a.safetensors`.
+- Replaces `comfy.ldm.cosmos.predict2.Attention.forward` for the whole process the first time the node
+  runs. Modules without `_ksr_state` (everything except a model being sampled with this node) fall
+  through to the original function. If another pack replaces the same method, the one installed last
+  wraps the other; the SnapRef node patches per instance and is not affected.
+- Relies on internals:
+  - `predict2.Attention`: `forward(x, context, rope_emb, transformer_options)`, `compute_qkv` returning
+    q/k/v as `[batch, tokens, heads, dim]`, `compute_attention`, `attn_op`, `comfy_attention`,
+    `output_proj`, `output_dropout`; module-level `optimized_attention(q, k, v, heads, mask=,
+    skip_reshape=True)` taking a float additive mask (Comfy Kitchen int8 attention does).
+  - `predict2.Block.forward(x, emb, context, rope_emb_L_1_1_D=, adaln_lora_B_T_3D=,
+    extra_per_block_pos_emb=, transformer_options=)` and `MiniTrainDIT.prepare_embedded_sequence`,
+    `t_embedder`, `t_embedding_norm`, `pos_embedder`, `preprocess_text_embeds` (the reference pass
+    re-implements the start of the model forward).
+  - `torch.compile` modules exposing `_orig_mod` (the reference pass must run uncompiled).
+  - `WrappersMP.DIFFUSION_MODEL` called as `(x, timesteps, context, fps, padding_mask, **kwargs)`,
+    `transformer_options["cond_or_uncond"]` with 0 = positive, `WrappersMP.APPLY_MODEL` with the
+    `BaseModel` as `class_obj`, `BaseModel.current_patcher.patches_uuid`.
+  - `CallbacksMP.ON_DETACH` called as `(patcher, unpatch_all)`: `unpatch_all=False` on every sampling
+    run (the model is handed to another clone), `True` on a real unload. The reference cache is dropped
+    only on `True`.
+  - `comfy.weight_adapter.lora.LoRAAdapter(loaded_keys, (up, down, alpha, None, None, None))` and
+    `ModelPatcher.add_patches` returning the keys it took.
+- What breaks loudly: a changed signature or tensor layout (TypeError / shape error on the first step),
+  a weight file with another format id, a model with another block count than 28 or Anima 2.9B's 40.
+- What can break silently:
+  - `cond_or_uncond` missing or renamed: every row is treated as positive, so the negative branch reads
+    the reference too (weaker reference, like `ref_in_uncond`).
+  - `ON_DETACH` no longer firing with `True` on unload: the keys/values stay in VRAM (0.9 GB per 1 MP
+    reference). If it starts firing with `True` on every run: the reference is encoded again for every
+    image (about 0.4 s and a higher step-1 memory peak); the log line
+    `KludgeAnimaSnapRef: encoded N reference(s)` then appears once per image instead of once.
+  - torch.compile no longer sharing one compiled block between blocks: correct but slow, with
+    `torch._dynamo hit config.recompile_limit` in the log. The patch avoids per-block Python values on
+    purpose (the SnapRef node's `_i=index` default argument is what trips this).
+  - Placed in front of Anima Block Compile it still works, but every change of the reference rebuilds
+    the model (`model.clone(disable_dynamic=True)`) and recompiles; after 8 rebuilds in one server the
+    recompile limit is reached and blocks run uncompiled. Keep it after Block Compile.
+- The target LoRA patches share one `loaded_keys` set so that 2.9B LoRA Remap sees them as one LoRA
+  reaching block 39 on a 2.9B model and does not move them.
+- Follow the SnapRef node when it changes: new weight versions may add streams, modes or targets
+  (`_Adapter`, `_lora_sets`), and the reference pass (`_encode_reference`) mirrors its
+  `_encode_reference`. Not ported: `ref_guidance`, `use_batch`, the simple picture-picker node.
+- Retire when the SnapRef node itself keeps the cond+uncond batch, merges the target LoRA and compiles
+  with Block Compile.
+- Check (scripts used on 2026-11-20 are in the portable's `ComfyUI/output/snapref/`):
+  - Same computation: bf16 weights, pytorch attention, `--fp32-unet`, same seed, this node against the
+    SnapRef node. 1 step / 30 steps PSNR was 46.0 / 41.0 dB at defaults, the same as the SnapRef node
+    against itself with another batch layout (45.8 / 41.2 dB), and 40–54 dB for char, strength ±1, two
+    references, weights, stitch, ref_megapixels + caption and ref_in_uncond. A wrong formula gives
+    15–25 dB. `fidelity` has to be compared under bf16 compute (the SnapRef node only fades the negative
+    rows under fp16 / bf16; in fp32 it behaves as ref_in_uncond): 27 dB there, with equal distances to
+    the default (9.5 dB) and to ref_in_uncond (16.1 / 16.2 dB) for both nodes.
+  - Speed, Anima 2B int8 convrot, CK, 1024², 30 steps, one 1 MP reference, after a warm-up image:
+    7.0 s with Block Compile (6.2 s without the node), 8.0 s without compile, one `encoded` log line
+    for the whole run and no `recompile_limit` line.
+  - Unload: after `POST /free {"unload_models": true}` GPU memory must return to the idle level
+    (1.3 GB here after a run with two references that had 7.0 GB in use).
+  - 2.9B: SnapRef followed by 2.9B LoRA Remap must be bit-identical to SnapRef alone.
