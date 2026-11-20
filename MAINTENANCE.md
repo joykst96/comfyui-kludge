@@ -285,3 +285,22 @@ Same forecaster, window rule and sampler wrapper; `_H3` in `spectrum.py` is the 
   - Unload: after `POST /free {"unload_models": true}` GPU memory must return to the idle level
     (1.3 GB here after a run with two references that had 7.0 GB in use).
   - 2.9B: SnapRef followed by 2.9B LoRA Remap must be bit-identical to SnapRef alone.
+
+## Releasing to the Comfy Registry
+
+- Registry node id `kludge`, publisher `joykst96` (`pyproject.toml`). Neither can be changed after the
+  first publish. The GitHub repository keeps the name `comfyui-kludge`; no code depends on the folder
+  name the pack is installed under.
+- A push to main that changes `pyproject.toml` runs `.github/workflows/publish_action.yml`, which
+  publishes the `version` written in that file. It needs the repository secret `REGISTRY_ACCESS_TOKEN`
+  (a publishing API key of the publisher, made on registry.comfy.org). Raise `version` for each release.
+  Commits pushed without touching `pyproject.toml` reach only git clone installs.
+- `requires-comfyui` is `>=0.45.0`: Guider Track Model and SnapRef were only checked there, and one
+  failing import takes the whole pack down. Raise it when a node starts needing something newer.
+- Check before pushing a release (comfy-cli, run in the repository):
+  - `uvx --from comfy-cli comfy --skip-prompt node validate` checks the metadata and the registry's
+    security rules (no `eval` / `exec`, no pip install at run time).
+  - `uvx --from comfy-cli comfy --skip-prompt node pack` writes `node.zip` with what would be uploaded
+    (git-tracked files). Look inside, then delete it: code, README, MAINTENANCE and the four license
+    files, never weights.
+  - 2026-11-21, version 0.1.0, comfy-cli through uvx: validate passed, 17 files in the archive.

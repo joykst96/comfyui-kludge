@@ -13,6 +13,13 @@ Load Diffusion Model → Anima INT8 Quantize → LoRA loader(s) → Anima 2.9B L
 
 Every node is optional; keep the order.
 
+## Install
+
+Needs ComfyUI 0.45.0 or newer and no extra Python packages. Either
+
+- from the Comfy Registry, where the pack is named `kludge`: `comfy node install kludge`, or
+- `git clone https://github.com/joykst96/comfyui-kludge` inside `ComfyUI/custom_nodes`.
+
 ## Nodes
 
 **Anima INT8 Quantize** (`KludgeAnimaInt8Quantize`) — quantizes a bf16 Anima model to int8 while

@@ -8,3 +8,6 @@ __pycache__/
 *.pth
 *.bin
 *.gguf
+
+# comfy node pack output
+node.zip
